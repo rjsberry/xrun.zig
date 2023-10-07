@@ -32,20 +32,19 @@ const Allocator = mem.Allocator;
 const ArrayList = std.ArrayList;
 const Ast = zig.Ast;
 
-const system = @cImport({
-    @cInclude("signal.h");
-});
-
 pub fn main() void {
     const allocator = heap.page_allocator;
-    run(allocator) catch |err| {
+
+    const term = run(allocator) catch |err| {
         unwrap(void, printError(allocator, err));
         process.exit(1);
     };
+
+    process.exit(term);
 }
 
 /// Runs the application.
-fn run(allocator: Allocator) !void {
+fn run(allocator: Allocator) !u8 {
     var args = try process.argsWithAllocator(allocator);
     defer args.deinit();
     _ = args.skip();
@@ -88,29 +87,30 @@ fn run(allocator: Allocator) !void {
         allocator,
         &openocd_args,
     );
+    defer _ = unwrap(process.Child.Term, openocd_rdr.child.wait());
     defer openocd_rdr.deinit();
 
-    switch (cmd) {
+    return switch (cmd) {
         .flash => try runFlash(&openocd_rdr),
         .gdb => try runGdb(allocator, &openocd_rdr, &cfg, elf_path),
-        .monitor => try runMonitor(allocator, &openocd_rdr),
-    }
+        .monitor => try runMonitor(allocator, &openocd_rdr, &cfg, elf_path),
+    };
 }
 
 /// Runs the `flash` subcommand.
-fn runFlash(openocd_rdr: *OpenocdReader) !void {
+fn runFlash(openocd_rdr: *OpenocdReader) !u8 {
     while (try openocd_rdr.next()) |line| {
         if (mem.startsWith(u8, line, "Error")) {
             var std_err = io.getStdErr().writer();
             unwrap(void, std_err.print("{s}\n", .{line}));
-            process.exit(1);
+            return 1;
         }
         if (mem.eql(u8, line, "shutdown command invoked")) {
             break;
         }
     }
 
-    _ = try openocd_rdr.child.wait();
+    return 0;
 }
 
 /// Runs the `gdb` subcommand.
@@ -119,14 +119,14 @@ fn runGdb(
     openocd_rdr: *OpenocdReader,
     cfg: *const Config,
     elf_path: []const u8,
-) !void {
-    const gdb_bin = if (cfg.gdb) |gdb| gdb else "gdb-multiarch";
+) !u8 {
+    defer _ = unwrap(process.Child.Term, openocd_rdr.child.kill());
 
     while (try openocd_rdr.next()) |line| {
         if (mem.startsWith(u8, line, "Error")) {
             var std_err = io.getStdErr().writer();
             unwrap(void, std_err.print("{s}\n", .{line}));
-            process.exit(1);
+            return 1;
         }
         if (mem.endsWith(u8, line, "gdb connections")) {
             break;
@@ -134,14 +134,14 @@ fn runGdb(
     }
 
     const gdb_args = [_][]const u8{
-        gdb_bin,
+        cfg.gdb.asStr(),
         "-q",
         "-ex",
         "target extended-remote :3333",
         "-ex",
         "set print asm-demangle on",
         "-ex",
-        "b _reset",
+        "break _reset",
         "-ex",
         "load",
         "-ex",
@@ -156,37 +156,151 @@ fn runGdb(
     gdb.stderr_behavior = .Inherit;
     _ = try gdb.spawnAndWait();
 
-    _ = try openocd_rdr.child.kill();
-    _ = try openocd_rdr.child.wait();
+    return 0;
 }
 
 /// Runs the `monitor` subcommand.
-fn runMonitor(allocator: Allocator, openocd_rdr: *OpenocdReader) !void {
+fn runMonitor(
+    allocator: Allocator,
+    openocd_rdr: *OpenocdReader,
+    cfg: *const Config,
+    elf_path: []const u8,
+) !u8 {
+    defer _ = unwrap(process.Child.Term, openocd_rdr.child.kill());
+
     while (try openocd_rdr.next()) |line| {
         if (mem.startsWith(u8, line, "Error")) {
             var std_err = io.getStdErr().writer();
             unwrap(void, std_err.print("{s}\n", .{line}));
             process.exit(1);
         }
-        if (mem.startsWith(u8, line, "Info : rtt: Control block found")) {
+        if (mem.endsWith(u8, line, "rtt connections")) {
             break;
         }
     }
 
-    const addr = net.Address.initIp4([_]u8{ 127, 0, 0, 1 }, 9999);
+    const gdb_args = [_][]const u8{
+        cfg.gdb.asStr(),
+        "-q",
+        "--batch",
+        "-ex",
+        "target extended-remote :3333",
+        "-ex",
+        "set print asm-demangle on",
+        "-ex",
+        "load",
+        "-ex",
+        "continue",
+        "-ex",
+        "x/s msg.ptr",
+        "-ex",
+        "backtrace",
+        elf_path,
+    };
+
+    var gdb = process.Child.init(&gdb_args, allocator);
+    gdb.stdin_behavior = .Ignore;
+    gdb.stdout_behavior = .Pipe;
+    gdb.stderr_behavior = .Pipe;
+    _ = try gdb.spawn();
+
+    var gdb_poller = io.poll(allocator, enum { stdout }, .{
+        .stdout = gdb.stdout.?,
+    });
+    defer gdb_poller.deinit();
 
     var stream_buf = ArrayList(u8).init(allocator);
     defer stream_buf.deinit();
+
+    const addr = net.Address.initIp4([_]u8{ 127, 0, 0, 1 }, 9999);
     var tcp_stream = try net.tcpConnectToAddress(addr);
+    var tv = mem.zeroInit(os.timeval, .{ .tv_usec = 500000 });
+    const tv_bytes: *const [@sizeOf(@TypeOf(tv))]u8 = @ptrCast(&tv);
+    try os.setsockopt(
+        tcp_stream.handle,
+        os.SOL.SOCKET,
+        os.SO.RCVTIMEO,
+        tv_bytes,
+    );
+
     var std_out = io.getStdOut().writer();
+    var rdr = tcp_stream.reader();
+    var wtr = stream_buf.writer();
 
     while (true) {
-        var rdr = tcp_stream.reader();
-        var wtr = stream_buf.writer();
-        try rdr.streamUntilDelimiter(wtr, '\n', null);
-        unwrap(void, std_out.print("{s}\n", .{stream_buf.items}));
+        const gdb_events = try os.poll(&gdb_poller.poll_fds, 0);
+        if (gdb_poller.poll_fds[0].revents & os.POLL.HUP != 0) {
+            break;
+        }
+
+        rdr.streamUntilDelimiter(wtr, '\n', null) catch |err| switch (err) {
+            error.WouldBlock => {},
+            else => |_| return err,
+        };
+
+        // If GDB hasn't connected to OpenOCD we throw away any RTT messages.
+        //
+        // There's a bit of a race condition where OpenOCD can start sending
+        // us RTT messages before GDB connects. When GDB resets the firmware
+        // this can cause us to receive the same RTT messages towards the
+        // start of the firmware twice.
+        if (gdb_events != 0 and stream_buf.items.len != 0) {
+            unwrap(void, std_out.print("{s}\n", .{stream_buf.items}));
+        }
         stream_buf.clearRetainingCapacity();
     }
+
+    // Read all of GDBs stdout.
+    var amt: usize = 512;
+    while (amt != 0) {
+        var q = &gdb_poller.fifos[0];
+        var buf = try q.writableWithSize(amt);
+        amt = try os.read(gdb_poller.poll_fds[0].fd, buf);
+        q.update(amt);
+    }
+
+    switch (try gdb.wait()) {
+        .Exited => |code| if (code != 0) return error.GdbFailed,
+        else => return error.GdbFailed,
+    }
+
+    var gdb_lines = mem.split(u8, gdb_poller.fifos[0].buf, "\n");
+    while (gdb_lines.next()) |line| {
+        if (mem.startsWith(u8, line, "Program received signal SIGTRAP")) {
+            break;
+        }
+    }
+
+    const trapped = gdb_lines.next() orelse @panic("parse gdb output");
+    const panicked = mem.startsWith(u8, trapped, "builtin.default_panic");
+
+    if (!panicked) {
+        return 0;
+    }
+
+    _ = gdb_lines.next();
+    const panic_output = gdb_lines.next() orelse @panic("parse gdb output");
+    var panic_output_iter = mem.splitScalar(u8, panic_output, '"');
+    _ = panic_output_iter.next();
+    const panic_msg = panic_output_iter.next() orelse @panic("parse gdb");
+
+    var std_err = io.getStdErr().writer();
+
+    unwrap(void, std_err.print(
+        "\n\x1b[31;1merror:\x1b[0m firmware panicked at: \x1b[36m{s}\x1b[0m\n",
+        .{panic_msg},
+    ));
+
+    while (gdb_lines.next()) |line| {
+        if (!mem.startsWith(u8, line, "#")) {
+            break;
+        }
+        unwrap(void, std_err.print("{s}\n", .{line}));
+    }
+
+    unwrap(void, std_err.writeAll("\n"));
+
+    return 1;
 }
 
 /// Subcommands that `xrun.zig` can execute.
@@ -210,7 +324,7 @@ const Config = struct {
     /// Allows overriding the default OpenOCD adapter speed.
     adapter_speed: ?usize,
     /// The gdb binary to use.
-    gdb: ?[]const u8,
+    gdb: DynStr,
 
     /// Parses the config from an (absolute) path to an `xrun.zig.zon`.
     fn parse(allocator: Allocator, zon_path: []const u8) !Config {
@@ -239,7 +353,7 @@ const Config = struct {
             .target = undefined,
             .interface = undefined,
             .adapter_speed = null,
-            .gdb = null,
+            .gdb = DynStr{ .static = "gdb-multiarch" },
         };
 
         var have_target = false;
@@ -263,7 +377,9 @@ const Config = struct {
                 cfg.adapter_speed = try fmt.parseInt(usize, adapter_speed, 10);
             } else if (mem.eql(u8, field_name, "gdb")) {
                 const token = ast.tokenSlice(val_token);
-                cfg.gdb = try parseStrLit(allocator, token);
+                cfg.gdb = DynStr{
+                    .dynamic = try parseStrLit(allocator, token),
+                };
             }
         }
 
@@ -278,7 +394,10 @@ const Config = struct {
     fn deinit(self: *Config, allocator: Allocator) void {
         allocator.free(self.target);
         allocator.free(self.interface);
-        if (self.gdb) |gdb| allocator.free(gdb);
+        switch (self.gdb) {
+            .dynamic => |str| allocator.free(str),
+            else => {},
+        }
     }
 };
 
@@ -315,6 +434,12 @@ const DynStrTag = enum {
 const DynStr = union(DynStrTag) {
     static: []const u8,
     dynamic: []const u8,
+
+    fn asStr(self: DynStr) []const u8 {
+        switch (self) {
+            inline else => |str| return str,
+        }
+    }
 };
 
 /// Arguments to OpenOCD.
@@ -392,6 +517,8 @@ const OpenocdArgs = struct {
                 );
 
                 try args.appendSlice(&[_]DynStr{
+                    DynStr{ .static = "-c" },
+                    DynStr{ .static = "halt" },
                     DynStr{ .static = "-c" },
                     DynStr{ .static = "rtt server start 9999 0" },
                     DynStr{ .static = "-c" },
