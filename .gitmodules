@@ -1,3 +1,0 @@
-[submodule "libs/zig-rtt"]
-	path = libs/zig-rtt
-	url = https://github.com/rjsberry/rtt.zig
