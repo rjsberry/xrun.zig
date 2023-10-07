@@ -55,7 +55,8 @@ An example is shown below for the Raspberry Pi Pico H:
 
 ## Getting Started
 
-Add `xrun` to your `build.zig.zon` like so:
+If you would like to use the Zig package manager, add `xrun` to your
+`build.zig.zon` like so:
 
 ```zig
 .{
@@ -70,12 +71,18 @@ Add `xrun` to your `build.zig.zon` like so:
 }
 ```
 
+Alternatively you can include the code directly in your project as a submodule
+or simply by copying it in somewhere.
+
 Use the build wrapper in your `build.zig` to add run artifacts:
 
 ```zig
 const std = @import("std");
 
 const Xrun = @import("xrun").Xrun;
+
+// Or if you are using a submodule:
+// const Xrun = @import("path/to/xrun/build.zig").Xrun;
 
 pub fn build(b: *std.Build) void {
     var xrun = Xrun.init(b);
