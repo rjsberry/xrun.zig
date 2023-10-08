@@ -32,19 +32,19 @@ pub const Xrun = struct {
 
     /// Creates a step to wrap execution of firmware with the `xrun` runner.
     pub fn addRunArtifact(self: *Xrun, args: struct {
-        exe: *Step.Compile,
+        executable: *Step.Compile,
         forward_args: bool = true,
     }) *Step.Run {
         // If the caller hasn't already added the firmware as an install
         // artifact we need to do that ourselves so we can access the path to
         // the compiled firmware binary to pass to the runner.
-        self.b.installArtifact(args.fw);
+        self.b.installArtifact(args.executable);
 
         var run_cmd = self.b.addRunArtifact(self.runner);
 
         const cfg_path = self.b.pathFromRoot("xrun.zig.zon");
         run_cmd.addArg(cfg_path);
-        const elf_path = self.b.getInstallPath(.bin, args.fw.name);
+        const elf_path = self.b.getInstallPath(.bin, args.executable.name);
         run_cmd.addArg(elf_path);
 
         run_cmd.step.dependOn(self.b.getInstallStep());

@@ -92,7 +92,7 @@ pub fn build(b: *std.Build) void {
     // The following assumes you have stored the result of `b.addExecutable`
     // in a variable called `exe`
 
-    const xrun_cmd = xrun.addRunArtifact(.{ .exe = exe });
+    const xrun_cmd = xrun.addRunArtifact(.{ .executable = exe });
 
     const xrun_step = b.step("xrun", "Run the firmware on target hardware");
     xrun_step.dependOn(&xrun_cmd.step);
