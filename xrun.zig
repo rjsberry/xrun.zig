@@ -508,6 +508,13 @@ const OpenocdArgs = struct {
         });
 
         if (cmd == .monitor) {
+            try args.appendSlice(&[_]DynStr{
+                DynStr{ .static = "-c" },
+                DynStr{ .static = "halt" },
+                DynStr{ .static = "-c" },
+                DynStr{ .static = "rtt server start 9999 0" },
+            });
+
             if (try findRttSymbolAddress(allocator, elf_path)) |symbol_addr| {
                 var rtt_setup_arg =
                     try fmt.allocPrint(
@@ -517,10 +524,6 @@ const OpenocdArgs = struct {
                 );
 
                 try args.appendSlice(&[_]DynStr{
-                    DynStr{ .static = "-c" },
-                    DynStr{ .static = "halt" },
-                    DynStr{ .static = "-c" },
-                    DynStr{ .static = "rtt server start 9999 0" },
                     DynStr{ .static = "-c" },
                     DynStr{ .dynamic = rtt_setup_arg },
                     DynStr{ .static = "-c" },
