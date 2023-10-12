@@ -8,6 +8,11 @@ const zig = std.zig;
 
 const Step = std.Build.Step;
 
+pub fn build(b: *std.Build) void {
+    _ = b.standardTargetOptions(.{});
+    _ = b.standardOptimizeOption(.{});
+}
+
 /// The Xrun firmware runner.
 pub const Xrun = struct {
     b: *std.Build,
