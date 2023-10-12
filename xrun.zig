@@ -467,7 +467,7 @@ const OpenocdArgs = struct {
             .{cfg.target},
         );
 
-        try args.appendSlice(&[_]DynStr{
+        try args.appendSlice(&.{
             DynStr{ .static = "openocd" },
             DynStr{ .static = "-f" },
             DynStr{ .dynamic = interface_arg },
@@ -481,7 +481,7 @@ const OpenocdArgs = struct {
                 "adapter speed {}",
                 .{arg},
             );
-            try args.appendSlice(&[_]DynStr{
+            try args.appendSlice(&.{
                 DynStr{ .static = "-c" },
                 DynStr{ .dynamic = adapter_speed_arg },
             });
@@ -500,7 +500,7 @@ const OpenocdArgs = struct {
                 .{elf_path},
             );
 
-        try args.appendSlice(&[_]DynStr{
+        try args.appendSlice(&.{
             DynStr{ .static = "-c" },
             DynStr{ .static = "init" },
             DynStr{ .static = "-c" },
@@ -508,7 +508,7 @@ const OpenocdArgs = struct {
         });
 
         if (cmd == .monitor) {
-            try args.appendSlice(&[_]DynStr{
+            try args.appendSlice(&.{
                 DynStr{ .static = "-c" },
                 DynStr{ .static = "halt" },
                 DynStr{ .static = "-c" },
@@ -523,7 +523,7 @@ const OpenocdArgs = struct {
                     .{symbol_addr},
                 );
 
-                try args.appendSlice(&[_]DynStr{
+                try args.appendSlice(&.{
                     DynStr{ .static = "-c" },
                     DynStr{ .dynamic = rtt_setup_arg },
                     DynStr{ .static = "-c" },
@@ -641,7 +641,7 @@ const OpenocdReader = struct {
 fn findRttSymbolAddress(allocator: Allocator, elf: []const u8) !?usize {
     var exec_result = try process.Child.exec(.{
         .allocator = allocator,
-        .argv = &[_][]const u8{ "nm", elf },
+        .argv = &.{ "nm", elf },
     });
 
     switch (exec_result.term) {
